@@ -1,0 +1,5 @@
+astropy     >=5.3.4
+poliastro   >=0.17.0
+numpy       >=1.26
+liionpack   >=0.3.12
+loguru      >=0.7.2
