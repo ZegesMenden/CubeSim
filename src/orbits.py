@@ -16,8 +16,20 @@ import time
 import loguru
 from loguru import logger
 
-import common
 from .common import timedWrapper as timed
+from .common import initLogging as initLogging
+
+def getSunStrength(orbit: Orbit) -> u.Quantity:
+
+    posEarth = coordinates.get_body_barycentric("earth", orbit.epoch) - coordinates.get_body_barycentric("sun", orbit.epoch)
+    posSatEarth = coordinates.CartesianRepresentation(orbit.rv()[0])
+
+    # Calculate the satellite position relative to the sun
+    posSatSun = posSatEarth + posEarth
+
+    dist = posSatSun.norm()
+
+    return ((3.9e26 * u.W) / (4 * np.pi * dist ** 2)).to(u.W / u.m ** 2)
 
 class OrbitWrapper:
     
@@ -30,7 +42,7 @@ class OrbitWrapper:
             areaMassRatio (Quantity, optional): area to mass ratio (km^2/kg) body, only required when simulating drag. Defaults to None.
         """
 
-        common.initLogging(level=0, backtrace=True, diagnose=True, logfile=False)
+        initLogging(level=0, backtrace=True, diagnose=True, logfile=False)
 
         # TODO: 
         # Allow the propogator to be set by the user
@@ -41,6 +53,9 @@ class OrbitWrapper:
 
         self._cd: u.Quantity = cd
         self._amRatio: u.Quantity = areaMassRatio
+
+        # list of callbacks to be called during orbit propogation
+        self._propCallbacks: list[callable] = []
 
         if self._cd is not None:
             try:
@@ -105,6 +120,11 @@ class OrbitWrapper:
                 logger.info("Propagating orbit with aerodynamic drag")
 
                 def propFn(t0, state, k):
+                    
+                    # Run all the callbacks
+                    for callback in self._propCallbacks:
+                        callback(self)
+                    
                     twoBodyForce = propagation.func_twobody(t0, state, k)
                     ax, ay, az = perturbations.atmospheric_drag_exponential(
                         t0,
@@ -189,6 +209,20 @@ class OrbitWrapper:
 
         # Not 100% sure that this works, but tbh this is black magic to me 
         return coordinates.CartesianRepresentation(self._orbit.rv()[0]).represent_as(coordinates.WGS84GeodeticRepresentation)
+
+    def propCallback(self, callback: callable) -> callable:
+        """Add a callback to be called during orbit propogation
+
+        Args:
+            callback (callable): function to be called during orbit propogation
+        """
+
+        if not callable(callback):
+            raise TypeError("Callback must be a callable object")
+
+        self._propCallbacks.append(callback)
+
+        return callback
 
     @property
     def orbit(self) -> Orbit:
