@@ -11,6 +11,8 @@ def runOnce(fn: callable) -> callable:
     Returns:
         callable: the wrapped function that will only run once
     """
+
+    # Not 100% sure how this works, but it does
     def wrapper(*args, **kwargs):
         if not wrapper.hasRun:
             wrapper.hasRun = True
@@ -42,6 +44,13 @@ def initLogging(level: int = 0, backtrace: bool = False, diagnose: bool = False,
     # create timing level below trace
     logger.level("TIMING", no=2, color="<blue>")
 
+    logger.add(sys.stderr, level=level, backtrace=backtrace, diagnose=diagnose, colorize=True)
+
+    if logfile:
+        logger.add(fname, level=level, backtrace=backtrace, diagnose=diagnose, colorize=False)
+
+def configureLogging(level: int = 0, backtrace: bool = False, diagnose: bool = False, logfile: bool = False, fname: str = "simulation.log") -> None:
+    logger.remove()
     logger.add(sys.stderr, level=level, backtrace=backtrace, diagnose=diagnose, colorize=True)
 
     if logfile:
