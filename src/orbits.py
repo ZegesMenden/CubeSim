@@ -1,5 +1,6 @@
 import numpy as np
 
+import astropy.time as astime
 from astropy import units as u
 import astropy.coordinates as coordinates
 
@@ -19,10 +20,10 @@ from loguru import logger
 from .common import timedWrapper as timed
 from .common import initLogging as initLogging
 
-def getSunStrength(orbit: Orbit) -> u.Quantity:
+def getSunStrength(r: np.ndarray, epoch: astime.Time) -> u.Quantity:
 
-    posEarth = coordinates.get_body_barycentric("earth", orbit.epoch) - coordinates.get_body_barycentric("sun", orbit.epoch)
-    posSatEarth = coordinates.CartesianRepresentation(orbit.rv()[0])
+    posEarth = coordinates.get_body_barycentric("earth", epoch) - coordinates.get_body_barycentric("sun", epoch)
+    posSatEarth = coordinates.CartesianRepresentation(r * u.m if not isinstance(r[0], u.Quantity) else 1)
 
     # Calculate the satellite position relative to the sun
     posSatSun = posSatEarth + posEarth
@@ -30,6 +31,34 @@ def getSunStrength(orbit: Orbit) -> u.Quantity:
     dist = posSatSun.norm()
 
     return ((3.9e26 * u.W) / (4 * np.pi * dist ** 2)).to(u.W / u.m ** 2)
+
+def isInSun(r: np.ndarray, epoch: astime.Time) -> bool:
+
+    posEarth = coordinates.get_body_barycentric("earth", epoch) - coordinates.get_body_barycentric("sun", epoch)
+    posSatEarth = coordinates.CartesianRepresentation(r * u.m if not isinstance(r[0], u.Quantity) else 1)
+
+    # Calculate the satellite position relative to the sun
+    posSatSun = posSatEarth + posEarth
+
+    # ===========================================================================
+
+    # Calculate distances
+    distSunEarth = posEarth.norm()
+    distSunSat = posSatSun.norm()
+
+    # Calculate the normal vectors
+    sunEarthNorm = posEarth / distSunEarth
+    sunSatNorm = posSatSun / distSunSat
+
+    angle = np.arccos((sunEarthNorm.xyz * sunSatNorm.xyz).sum(axis=0))
+
+    # find distance from sun to earth in meters
+    distSunEarthKm = distSunEarth.to(u.km)
+
+    limbAngle = np.arctan2(6378.137 * u.km, distSunEarthKm)
+
+    # return (distSunSat < distSunEarth) # or (angle > limbAngle)
+    return (angle > limbAngle) or (distSunSat < distSunEarth)
 
 class OrbitWrapper:
     
@@ -44,17 +73,13 @@ class OrbitWrapper:
 
         initLogging(level=0, backtrace=True, diagnose=True, logfile=False)
 
-        # TODO: 
-        # Allow the propogator to be set by the user
         self._orbit: Orbit = orbit
-
-        self._normalPropagator: callable = twobodyPropagation.CowellPropagator
-        self._aeroPropagator: callable = twobodyPropagation.CowellPropagator
+        self._propagator: callable = twobodyPropagation.CowellPropagator
 
         self._cd: u.Quantity = cd
         self._amRatio: u.Quantity = areaMassRatio
 
-        # list of callbacks to be called during orbit propogation
+        # list of callbacks to be called during orbit propagation
         self._propCallbacks: list[callable] = []
 
         if self._cd is not None:
@@ -109,38 +134,36 @@ class OrbitWrapper:
 
         try:
 
-            if not useAero:
+            logger.info("Propagating orbit" + (" with aerodynamic drag" if useAero else ""))
 
-                logger.info("Propagating orbit without aerodynamic drag")
+            def propFn(t0, state, k):
 
-                self._orbit = self._orbit.propagate(duration, method=self._normalPropagator())
+                cbTime = self._orbit.epoch + t0 * u.s
 
-            else:
+                # Run all the callbacks with the current orbit
+                for callback in self._propCallbacks:
+                    callback(state, cbTime)
                 
-                logger.info("Propagating orbit with aerodynamic drag")
-
-                def propFn(t0, state, k):
-                    
-                    # Run all the callbacks
-                    for callback in self._propCallbacks:
-                        callback(self)
-                    
-                    twoBodyForce = propagation.func_twobody(t0, state, k)
-                    ax, ay, az = perturbations.atmospheric_drag_exponential(
-                        t0,
-                        state,
-                        k,
-                        R=Earth.R.to(u.km),
-                        C_D=self._cd * u.one,
-                        A_over_m=self._amRatio.to_value(u.km ** 2 / u.kg),
-                        H0=constants.H0_earth.to(u.km).value,
-                        rho0=constants.rho0_earth.to(u.kg / u.km ** 3).value
-                    )
-                    aeroForce = np.array([0, 0, 0, ax, ay, az])
-
-                    return twoBodyForce + aeroForce
+                twoBodyForce = propagation.func_twobody(t0, state, k)
                 
-                self._orbit = self._orbit.propagate(duration, method=self._aeroPropagator(f=propFn))
+                if not useAero:
+                    return twoBodyForce
+                
+                ax, ay, az = perturbations.atmospheric_drag_exponential(
+                    t0,
+                    state,
+                    k,
+                    R=Earth.R.to(u.km),
+                    C_D=self._cd * u.one,
+                    A_over_m=self._amRatio.to_value(u.km ** 2 / u.kg),
+                    H0=constants.H0_earth.to(u.km).value,
+                    rho0=constants.rho0_earth.to(u.kg / u.km ** 3).value
+                )
+                aeroForce = np.array([0, 0, 0, ax, ay, az])
+
+                return twoBodyForce + aeroForce
+            
+            self._orbit = self._orbit.propagate(duration, method=self._propagator(f=propFn))
         except Exception as e:
             logger.error(f"Error while propagating orbit: {e}")
             raise e
@@ -211,16 +234,17 @@ class OrbitWrapper:
         return coordinates.CartesianRepresentation(self._orbit.rv()[0]).represent_as(coordinates.WGS84GeodeticRepresentation)
 
     def propCallback(self, callback: callable) -> callable:
-        """Add a callback to be called during orbit propogation
+        """Add a callback to be called during orbit propagation
 
         Args:
-            callback (callable): function to be called during orbit propogation
+            callback (callable): function to be called during orbit propagation
         """
 
         if not callable(callback):
             raise TypeError("Callback must be a callable object")
 
         self._propCallbacks.append(callback)
+        logger.info(f"Callback |{callback.__name__}| added to propagation callback list")
 
         return callback
 
