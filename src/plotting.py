@@ -27,7 +27,6 @@ def GenerateGroundTrackPlot(orbit: Orbit, orbits: float = 1, time_offset: u.Quan
     gp = GroundtrackPlotter()
     gp.plot(EarthSatellite(orbit, Spacecraft(1.0 * (u.m**2), 1.0, 1.0 * u.kg)), t_span=t_span, color=color, label=label)
 
-
     dtick = 30
     # add "label" trace
     x = list(range(-180, 180 + dtick, dtick))
@@ -132,4 +131,3 @@ def Generate3DOrbitPlot(orbit: Orbit, label: str = "Orbit", color: str = "red"):
     op.show()
 
     return fig
-    # plotly.offline.plot(fig, filename="3DOrbit.html", auto_open=True)
