@@ -53,21 +53,22 @@ panelVoltage = []
 packVoltage = []
 
 @orbit.propCallback
-def powerCallback(state, t: astime.Time) -> float:
+def powerCallback(orb: Orbit) -> float:
     global packVoltage
     global panelVoltage
     global packPower
     global last_t
-
-    sunStrength = (orbits.getSunStrength(state[:3], t).value * orbits.isInSun(state[:3], t))
+    
+    r = orb.rv()[0].to(u.km).value
+    sunStrength = (orbits.getSunStrength(r, orb.epoch).value * orbits.isInSun(r, orb.epoch))
 
     solarVoltage = solarArray.getPower(sunStrength, 0)
     solarPower = solarArray.getPower(sunStrength, 0)
 
     dPower = solarPower - 20
 
-    dt = (t - last_t).to(u.s).value
-    
+    dt = (orb.epoch - last_t).to(u.s).value
+    print(dt)    
     if dPower * (dt/3600) + batteryPack.getEnergy() >= batteryPack.capacity:
         dPower = 0
 
@@ -80,7 +81,7 @@ def powerCallback(state, t: astime.Time) -> float:
     packVoltage.append(batteryPack.getVoltage())
     packPower.append(batteryPack.getEnergy())
 
-    last_t = t
+    last_t = orb.epoch
 
 propogationDur = 1.5 * u.h
 orbit.propagateOrbit(propogationDur)

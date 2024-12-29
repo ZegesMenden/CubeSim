@@ -6,6 +6,7 @@ import astropy.coordinates as coordinates
 
 from poliastro.bodies import Earth, Sun
 from poliastro.twobody import Orbit
+from poliastro.twobody.sampling import EpochsArray
 
 import poliastro.constants as constants 
 import poliastro.core.perturbations as perturbations
@@ -23,7 +24,7 @@ from .common import initLogging as initLogging
 def getSunStrength(r: np.ndarray, epoch: astime.Time) -> u.Quantity:
 
     posEarth = coordinates.get_body_barycentric("earth", epoch) - coordinates.get_body_barycentric("sun", epoch)
-    posSatEarth = coordinates.CartesianRepresentation(r * u.m if not isinstance(r[0], u.Quantity) else 1)
+    posSatEarth = coordinates.CartesianRepresentation(r * u.km if not isinstance(r[0], u.Quantity) else 1)
 
     # Calculate the satellite position relative to the sun
     posSatSun = posSatEarth + posEarth
@@ -35,7 +36,7 @@ def getSunStrength(r: np.ndarray, epoch: astime.Time) -> u.Quantity:
 def isInSun(r: np.ndarray, epoch: astime.Time) -> bool:
 
     posEarth = coordinates.get_body_barycentric("earth", epoch) - coordinates.get_body_barycentric("sun", epoch)
-    posSatEarth = coordinates.CartesianRepresentation(r * u.m if not isinstance(r[0], u.Quantity) else 1)
+    posSatEarth = coordinates.CartesianRepresentation(r * u.km if not isinstance(r[0], u.Quantity) else 1)
 
     # Calculate the satellite position relative to the sun
     posSatSun = posSatEarth + posEarth
@@ -59,6 +60,34 @@ def isInSun(r: np.ndarray, epoch: astime.Time) -> bool:
 
     # return (distSunSat < distSunEarth) # or (angle > limbAngle)
     return (angle > limbAngle) or (distSunSat < distSunEarth)
+
+def sunData(r: np.ndarray, epoch: astime.Time) -> bool:
+
+    posEarth = coordinates.get_body_barycentric("earth", epoch) - coordinates.get_body_barycentric("sun", epoch)
+    posSatEarth = coordinates.CartesianRepresentation(r * u.km if not isinstance(r[0], u.Quantity) else 1)
+
+    # Calculate the satellite position relative to the sun
+    posSatSun = posSatEarth
+
+    # ===========================================================================
+
+    # Calculate distances
+    distSunEarth = posEarth.norm()
+    distSunSat = posSatSun.norm()
+
+    # Calculate the normal vectors
+    sunEarthNorm = posEarth / distSunEarth
+    sunSatNorm = posSatSun / distSunSat
+
+    angle = np.arccos((sunEarthNorm.xyz * sunSatNorm.xyz).sum(axis=0))
+
+    # find distance from sun to earth in meters
+    distSunEarthKm = distSunEarth.to(u.km)
+
+    limbAngle = np.arctan2(6378.137 * u.km, distSunEarthKm)
+
+    # return (distSunSat < distSunEarth) # or (angle > limbAngle)
+    return (angle - limbAngle), (distSunEarth - distSunSat)
 
 class OrbitWrapper:
     
@@ -100,12 +129,13 @@ class OrbitWrapper:
         logger.info("OrbitWrapper initialized")
 
     @timed
-    def propagateOrbit(self, duration: u.Quantity, useAero: bool = True) -> None:
+    def propagateOrbit(self, duration: u.Quantity, useAero: bool = True, callbackDt: u.Quantity = 10 * u.s) -> None:
         """propagate the orbit of the OrbitWrapper by a set time
 
         Args:
             duration (u.Quantity): duration of time to propagate the orbit
             useAero (bool, optional): incorporate aerodynamic drag into the simulation. Defaults to True.
+            callbackDt (u.Quantity, optional): time interval between calling the propagation callbacks. Defaults to 10*u.s.
 
         Raises:
             ValueError: when drag is to be simulated, but the drag coefficient or area to mass ratio are not set
@@ -126,6 +156,20 @@ class OrbitWrapper:
         if duration.to(u.s).value < 0:
             raise ValueError("Duration must be a positive time Quantity")
 
+        # Check if the callback time interval is a Quantity
+        if not isinstance(callbackDt, u.Quantity):
+            raise TypeError("Callback time interval must be a Quantity")
+        
+        # Convert the callback time interval to seconds
+        try:
+            callbackDt = callbackDt.to(u.s)
+        except u.UnitConversionError:
+            raise ValueError("Callback time interval must be a time Quantity")
+        
+        # Check if the callback time interval is > 0s
+        if callbackDt.to(u.s).value <= 0:
+            raise ValueError("Callback time interval must be a non-zero positive time Quantity")
+
         # Check if the all aero params are present
         if useAero and (self._cd is None or self._amRatio is None):
             raise ValueError("Drag coefficient and area to mass ratio must be set to simulate drag")
@@ -137,12 +181,6 @@ class OrbitWrapper:
             logger.info("Propagating orbit" + (" with aerodynamic drag" if useAero else ""))
 
             def propFn(t0, state, k):
-
-                cbTime = self._orbit.epoch + t0 * u.s
-
-                # Run all the callbacks with the current orbit
-                for callback in self._propCallbacks:
-                    callback(state, cbTime)
                 
                 twoBodyForce = propagation.func_twobody(t0, state, k)
                 
@@ -163,7 +201,13 @@ class OrbitWrapper:
 
                 return twoBodyForce + aeroForce
             
-            self._orbit = self._orbit.propagate(duration, method=self._propagator(f=propFn))
+            r, v = self._orbit.to_ephem(EpochsArray(self._orbit.epoch + (np.arange(0, duration.value, callbackDt.value) << u.s), method=self._propagator(f=propFn))).rv()
+            for i in range(len(r)):
+                self._orbit = Orbit.from_vectors(Earth, r[i], v[i], self._orbit.epoch + callbackDt)
+
+                for callback in self._propCallbacks: 
+                    callback(self.orbit)
+
         except Exception as e:
             logger.error(f"Error while propagating orbit: {e}")
             raise e
