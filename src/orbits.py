@@ -15,16 +15,48 @@ import poliastro.twobody.propagation as twobodyPropagation
 
 import time
 
+import pyIGRF
+
 import loguru
 from loguru import logger
 
 from .common import timedWrapper as timed
 from .common import initLogging as initLogging
 
-def getSunStrength(r: np.ndarray, epoch: astime.Time) -> u.Quantity:
+def getMagneticField(orb: Orbit) -> tuple[u.Quantity, u.Quantity, u.Quantity]:
+    """Get the magnetic field at the given position of the satellite
 
-    posEarth = coordinates.get_body_barycentric("earth", epoch) - coordinates.get_body_barycentric("sun", epoch)
-    posSatEarth = coordinates.CartesianRepresentation(r * u.km if not isinstance(r[0], u.Quantity) else 1)
+    Args:
+        orb (Orbit): orbit of the satellite
+
+    Returns:
+        tuple[u.Quantity, u.Quantity, u.Quantity]: x, y, z components of the magnetic field at the given position in nT, x is north, y is east, z is down 
+    """
+
+    # Get lat/lon position of the satellite
+    pos = coordinates.CartesianRepresentation(orb.r).represent_as(coordinates.WGS84GeodeticRepresentation)
+
+    # Convert lat/lon to degrees, and height to km
+    lat = pos.lat.to(u.deg).value
+    lon = pos.lon.to(u.deg).value
+    height = pos.height.to(u.km).value
+
+    # Get the magnetic field at the given position
+    d, i, h, x, y, z, f = pyIGRF.igrf_value(lat, lon, height, orb.epoch.decimalyear)
+    return ((x/1e9)*u.T, (y/1e9)*u.T, (z/1e9)*u.T)
+
+def getSunStrength(orb: Orbit) -> u.Quantity:
+    """Calculate the strength of the sun at the given position of the satellite
+
+    Args:
+        orb (Orbit): orbit of the satellite
+
+    Returns:
+        u.Quantity: strength of the sun at the given position in W/m^2
+    """
+
+    posEarth = coordinates.get_body_barycentric("earth", orb.epoch)
+    posSatEarth = coordinates.CartesianRepresentation(orb.r)
 
     # Calculate the satellite position relative to the sun
     posSatSun = posSatEarth + posEarth
@@ -33,10 +65,18 @@ def getSunStrength(r: np.ndarray, epoch: astime.Time) -> u.Quantity:
 
     return ((3.9e26 * u.W) / (4 * np.pi * dist ** 2)).to(u.W / u.m ** 2)
 
-def isInSun(r: np.ndarray, epoch: astime.Time) -> bool:
+def isInSun(orb: Orbit) -> bool:
+    """Check if the satellite is in the sun
 
-    posEarth = coordinates.get_body_barycentric("earth", epoch) - coordinates.get_body_barycentric("sun", epoch)
-    posSatEarth = coordinates.CartesianRepresentation(r * u.km if not isinstance(r[0], u.Quantity) else 1)
+    Args:
+        orb (Orbit): orbit of the satellite
+
+    Returns:
+        bool: True if the satellite is exposed to the sun, False otherwise
+    """
+
+    posEarth = coordinates.get_body_barycentric("earth", orb.epoch)
+    posSatEarth = coordinates.CartesianRepresentation(orb.r)
 
     # Calculate the satellite position relative to the sun
     posSatSun = posSatEarth + posEarth
@@ -56,38 +96,9 @@ def isInSun(r: np.ndarray, epoch: astime.Time) -> bool:
     # find distance from sun to earth in meters
     distSunEarthKm = distSunEarth.to(u.km)
 
-    limbAngle = np.arctan2(6378.137 * u.km, distSunEarthKm)
+    limbAngle = np.arctan2(Earth.R.to(u.km), distSunEarthKm)
 
-    # return (distSunSat < distSunEarth) # or (angle > limbAngle)
     return (angle > limbAngle) or (distSunSat < distSunEarth)
-
-def sunData(r: np.ndarray, epoch: astime.Time) -> bool:
-
-    posEarth = coordinates.get_body_barycentric("earth", epoch) - coordinates.get_body_barycentric("sun", epoch)
-    posSatEarth = coordinates.CartesianRepresentation(r * u.km if not isinstance(r[0], u.Quantity) else 1)
-
-    # Calculate the satellite position relative to the sun
-    posSatSun = posSatEarth
-
-    # ===========================================================================
-
-    # Calculate distances
-    distSunEarth = posEarth.norm()
-    distSunSat = posSatSun.norm()
-
-    # Calculate the normal vectors
-    sunEarthNorm = posEarth / distSunEarth
-    sunSatNorm = posSatSun / distSunSat
-
-    angle = np.arccos((sunEarthNorm.xyz * sunSatNorm.xyz).sum(axis=0))
-
-    # find distance from sun to earth in meters
-    distSunEarthKm = distSunEarth.to(u.km)
-
-    limbAngle = np.arctan2(6378.137 * u.km, distSunEarthKm)
-
-    # return (distSunSat < distSunEarth) # or (angle > limbAngle)
-    return (angle - limbAngle), (distSunEarth - distSunSat)
 
 class OrbitWrapper:
     
