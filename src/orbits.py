@@ -204,7 +204,7 @@ class OrbitWrapper:
                     k,
                     R=Earth.R.to(u.km),
                     C_D=self._cd * u.one,
-                    A_over_m=self._amRatio.to_value(u.km ** 2 / u.kg),
+                    A_over_m=self._amRatio.to_value(u.m ** 2 / u.kg),
                     H0=constants.H0_earth.to(u.km).value,
                     rho0=constants.rho0_earth.to(u.kg / u.km ** 3).value
                 )
@@ -279,7 +279,7 @@ class OrbitWrapper:
         return posSatSun.norm()
 
     def getGroundTrack(self) -> coordinates.WGS84GeodeticRepresentation:
-        """_summary_
+        """Get the lat/lon/hieght ASL of the body's position on the ground
 
         Returns:
             coordinates.WGS84GeodeticRepresentation: lat/lon of the body's position on the ground
