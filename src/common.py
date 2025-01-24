@@ -2,6 +2,9 @@ import time
 from loguru import logger
 import sys
 
+RAD2DEG = 180 / 3.14159265358979323846
+DEG2RAD = 3.14159265358979323846 / 180
+
 def runOnce(fn: callable) -> callable:
     """runOnce is a decorator that ensures a function is only run once
 
